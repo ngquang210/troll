@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thiết bị Vô hiệu hoá</title>
+    <style>
+        /* --- CSS Starts Here --- */
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+
+        button#lockButton {
+            padding: 15px 30px;
+            font-size: 1.2em;
+            cursor: pointer;
+            background-color: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+
+        .hidden {
+            display: none !important; /* Important to override other display properties */
+        }
+
+        #lockOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.95); /* Darker background */
+            color: white;
+            display: flex; /* Use flexbox for centering */
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            text-align: center;
+            padding: 20px;
+            box-sizing: border-box; /* Include padding in element's total width and height */
+        }
+
+        #lockOverlay .content {
+            max-width: 90%;
+        }
+
+        #lockOverlay h1 {
+            font-size: 2em;
+            margin-bottom: 15px;
+            color: #ffc107; /* Warning color */
+        }
+
+        #lockOverlay p {
+            font-size: 1.2em;
+            margin: 10px 0;
+        }
+
+        #lockOverlay .timer {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #e9ecef; /* Lighter gray for timer */
+            margin: 20px 0;
+        }
+
+        #lockOverlay .instructions {
+            font-size: 1.1em;
+            margin-top: 30px;
+            color: #adb5bd; /* Subdued color for instructions */
+        }
+
+        #lockOverlay .note {
+            font-size: 0.9em;
+            margin-top: 40px;
+            color: #6c757d; /* Even more subdued for the note */
+            font-style: italic;
+        }
+
+        /* Media query for smaller screens */
+        @media (max-width: 600px) {
+             #lockOverlay h1 {
+                font-size: 1.5em;
+            }
+            #lockOverlay p {
+                font-size: 1em;
+            }
+             #lockOverlay .timer {
+                font-size: 1.8em;
+            }
+             #lockOverlay .instructions {
+                font-size: 1em;
+            }
+        }
+        /* --- CSS Ends Here --- */
+    </style>
+</head>
+<body>
+
+    <button id="lockButton">Kích hoạt khóa (Ví dụ)</button>
+
+    <div id="lockOverlay" class="hidden">
+        <div class="content">
+            <h1>Thiết bị đã vô hiệu hoá</h1>
+            <p>Mở khoá sau:</p>
+            <p class="timer"><span id="countdownTimer">100:00:00</span> (Giờ)</p>
+            <p id="mobileInstructions" class="instructions hidden">
+                Chạm vào màn hình 3 lần để mở khoá.
+            </p>
+            <p id="desktopInstructions" class="instructions hidden">
+                Nhấn phím cách (Spacebar) để mở khoá.
+            </p>
+             <p class="note">(Lưu ý: Không thể tắt nguồn thiết bị từ trình duyệt)</p>
+        </div>
+    </div>
+
+    <script>
+        // --- JavaScript Starts Here ---
+        const lockButton = document.getElementById('lockButton');
+        const lockOverlay = document.getElementById('lockOverlay');
+        const countdownTimer = document.getElementById('countdownTimer');
+        const mobileInstructions = document.getElementById('mobileInstructions');
+        const desktopInstructions = document.getElementById('desktopInstructions');
+
+        let timerInterval = null;
+        let targetTime = 0;
+        let isLocked = false;
+        let tapCount = 0;
+        let wakeLockSentinel = null; // For Wake Lock API
+
+        // --- Device Detection ---
+        const isMobile = navigator.maxTouchPoints > 0 || /Mobi|Android/i.test(navigator.userAgent);
+
+        // --- Wake Lock Functionality ---
+        const requestWakeLock = async () => {
+            if ('wakeLock' in navigator) {
+                try {
+                    // Request must be called within a user activation event (like click)
+                    // Or if the document is visible.
+                    if (document.visibilityState === 'visible') {
+                        wakeLockSentinel = await navigator.wakeLock.request('screen');
+                        wakeLockSentinel.addEventListener('release', () => {
+                            console.log('Screen Wake Lock released:', wakeLockSentinel.released);
+                            // Optionally re-request if needed and conditions allow,
+                            // but be careful not to create infinite loops.
+                            // Re-requesting might fail if the tab is not visible.
+                            wakeLockSentinel = null; // Clear sentinel when released
+                        });
+                        console.log('Screen Wake Lock active:', !wakeLockSentinel.released);
+                    } else {
+                         console.log('Document not visible, cannot request Wake Lock now.');
+                    }
+                } catch (err) {
+                    console.error(`Wake Lock Error: ${err.name}, ${err.message}`);
+                    wakeLockSentinel = null; // Ensure sentinel is null on error
+                }
+            } else {
+                console.warn('Wake Lock API not supported.');
+            }
+        };
+
+        const releaseWakeLock = async () => {
+            if (wakeLockSentinel && !wakeLockSentinel.released) {
+                try {
+                    await wakeLockSentinel.release();
+                    console.log('Screen Wake Lock explicitly released.');
+                } catch (err) {
+                    console.error(`Wake Lock Release Error: ${err.name}, ${err.message}`);
+                } finally {
+                     wakeLockSentinel = null; // Clear sentinel after release attempt
+                }
+            }
+        };
+
+        // --- Timer and Lock Logic ---
+        function formatTime(milliseconds) {
+            if (milliseconds < 0) milliseconds = 0;
+
+            let totalSeconds = Math.floor(milliseconds / 1000);
+            let hours = Math.floor(totalSeconds / 3600);
+            let minutes = Math.floor((totalSeconds % 3600) / 60);
+            let seconds = totalSeconds % 60;
+
+            // Pad with leading zeros
+            const paddedHours = String(hours).padStart(2, '0'); // Changed to 2 digits for consistency
+            const paddedMinutes = String(minutes).padStart(2, '0');
+            const paddedSeconds = String(seconds).padStart(2, '0');
+
+            return `${paddedHours}:${paddedMinutes}:${paddedSeconds}`;
+        }
+
+        function updateTimer() {
+            const now = Date.now();
+            const remainingTime = targetTime - now;
+
+            if (remainingTime <= 0) {
+                countdownTimer.textContent = "00:00:00"; // Show zero before unlocking
+                unlockDevice();
+            } else {
+                countdownTimer.textContent = formatTime(remainingTime);
+            }
+        }
+
+        function startCountdown() {
+            clearInterval(timerInterval); // Clear any existing interval
+            targetTime = Date.now() + (100 * 60 * 60 * 1000); // Set target time: 100 hours from now
+            // targetTime = Date.now() + (15 * 1000); // For testing: 15 seconds
+
+            updateTimer(); // Update immediately
+            timerInterval = setInterval(updateTimer, 1000); // Set interval
+        }
+
+        function handleUnlockAttempt(event) {
+            if (!isLocked) return;
+
+            if (isMobile) {
+                // Check if the event target is within the overlay or the overlay itself
+                 if (lockOverlay.contains(event.target) || event.target === lockOverlay) {
+                    tapCount++;
+                    console.log(`Tap count: ${tapCount}`);
+                    if (tapCount >= 3) {
+                        unlockDevice();
+                    }
+                }
+            } else {
+                if (event.type === 'keydown' && (event.key === ' ' || event.code === 'Space')) {
+                    event.preventDefault();
+                    unlockDevice();
+                }
+            }
+        }
+
+        async function lockDevice() { // Made async for await requestWakeLock
+            if (isLocked) return;
+
+            isLocked = true;
+            tapCount = 0;
+
+            lockOverlay.classList.remove('hidden'); // Show overlay first
+
+            // Show appropriate instructions
+            if (isMobile) {
+                mobileInstructions.classList.remove('hidden');
+                desktopInstructions.classList.add('hidden');
+                // Use capture: true to catch events even if elements inside overlay stop propagation
+                document.addEventListener('touchstart', handleUnlockAttempt, { capture: true });
+                // Request wake lock AFTER user interaction (the click) and showing overlay
+                await requestWakeLock(); // Wait for the request to attempt
+            } else {
+                desktopInstructions.classList.remove('hidden');
+                mobileInstructions.classList.add('hidden');
+                document.addEventListener('keydown', handleUnlockAttempt);
+            }
+
+            startCountdown(); // Start countdown after setup
+            lockButton.disabled = true; // Disable button
+        }
+
+        async function unlockDevice() { // Made async for await releaseWakeLock
+            if (!isLocked) return;
+
+            console.log("Unlocking device...");
+            isLocked = false;
+
+            clearInterval(timerInterval);
+            timerInterval = null;
+
+            lockOverlay.classList.add('hidden');
+            mobileInstructions.classList.add('hidden');
+            desktopInstructions.classList.add('hidden');
+
+            if (isMobile) {
+                document.removeEventListener('touchstart', handleUnlockAttempt, { capture: true });
+                await releaseWakeLock(); // Release the wake lock
+            } else {
+                document.removeEventListener('keydown', handleUnlockAttempt);
+            }
+
+            countdownTimer.textContent = "100:00:00"; // Reset timer display for next lock
+            lockButton.disabled = false; // Re-enable button
+        }
+
+        // --- Initialization ---
+        lockButton.addEventListener('click', lockDevice);
+
+        console.log(`Device detected as: ${isMobile ? 'Mobile/Touch' : 'Desktop'}`);
+
+        // Handle visibility change for Wake Lock re-acquisition attempt
+        document.addEventListener('visibilitychange', async () => {
+          // Only try to re-acquire if it was active before and the document becomes visible
+          if (isLocked && isMobile && !wakeLockSentinel && document.visibilityState === 'visible') {
+            console.log('Document became visible, attempting to re-acquire Wake Lock.');
+            await requestWakeLock();
+          } else if (wakeLockSentinel && document.visibilityState === 'hidden') {
+              console.log('Document became hidden, Wake Lock might be released by the browser.');
+              // No need to explicitly release here, browser usually handles it.
+              // Releasing manually might prevent re-acquisition on visibilitychange.
+          }
+        });
+
+        // Clean up listeners and wake lock on page unload
+        window.addEventListener('beforeunload', () => {
+            if(isLocked) {
+                // Optional: try to release wakelock, although browser should handle it
+                releaseWakeLock();
+                // Remove listeners to prevent memory leaks if page were somehow kept alive
+                 if (isMobile) {
+                    document.removeEventListener('touchstart', handleUnlockAttempt, { capture: true });
+                 } else {
+                    document.removeEventListener('keydown', handleUnlockAttempt);
+                 }
+                 clearInterval(timerInterval);
+            }
+        });
+        // --- JavaScript Ends Here ---
+    </script>
+
+</body>
+</html>
